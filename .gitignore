@@ -1,0 +1,10 @@
+node_modules/
+.playwright-cli/
+test-results/
+*.log
+.DS_Store
+
+# local scratch / screenshots
+*.png
+e2e*.js
+manual*.js

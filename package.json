@@ -1,0 +1,17 @@
+{
+  "name": "devonshire-booking",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Auto-book The Devonshire (Soho) the instant tables drop, one matrix job per night. Runs on GitHub Actions.",
+  "main": "src/book.js",
+  "scripts": {
+    "test": "node --test test/",
+    "book": "node src/book.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "playwright": "^1.49.0"
+  }
+}

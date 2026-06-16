@@ -1,0 +1,62 @@
+name: Devonshire live booking
+
+on:
+  # Fires 08:45 UTC on 18 June. The script then SLEEPS until 09:29 UTC
+  # (= 10:29 London, 1 min before the 10:30 table release) and probes every 30s.
+  # Early fire absorbs GitHub's scheduled-launch jitter.
+  schedule:
+    - cron: '45 8 18 6 *'
+  # Manual arming / backup (uses the live config below — no test inputs).
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  unit-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - run: npm install
+      - run: npm test
+
+  book:
+    needs: unit-tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        # Names live in secrets (BOOK_NAME_<night>) so this public repo
+        # exposes no personal data. Each night books exactly one table.
+        include:
+          - { night: '12', date: '2026-07-12' }
+          - { night: '13', date: '2026-07-13' }
+          - { night: '14', date: '2026-07-14' }
+          - { night: '15', date: '2026-07-15' }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - run: npm install
+      - run: npx playwright install --with-deps chromium
+      - name: Book ${{ matrix.date }}
+        env:
+          BOOK_EMAIL: ${{ secrets.BOOK_EMAIL }}
+          BOOK_PHONE: ${{ secrets.BOOK_PHONE }}
+          BOOK_NAME: ${{ secrets[format('BOOK_NAME_{0}', matrix.night)] }}
+        run: |
+          node src/book.js \
+            --date "${{ matrix.date }}" \
+            --name "$BOOK_NAME" \
+            --email "$BOOK_EMAIL" \
+            --phone "$BOOK_PHONE" \
+            --window-start "19:00" \
+            --window-end "20:00" \
+            --release-at "2026-06-18T09:29:00Z" \
+            --stop-at "2026-06-18T10:30:00Z" \
+            --retry-ms 30000

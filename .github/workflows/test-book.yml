@@ -1,0 +1,60 @@
+name: Devonshire test (manual, dry-run by default)
+
+# Manual-only. Defaults to DRY RUN (fills the form, never submits) so we can
+# verify the GitHub datacenter IP can reach DesignMyNight and the flow runs in
+# CI without creating any real reservation.
+on:
+  workflow_dispatch:
+    inputs:
+      date:
+        description: 'Date to probe (YYYY-MM-DD)'
+        type: string
+        default: '2026-06-24'
+      window_start:
+        type: string
+        default: '21:30'
+      window_end:
+        type: string
+        default: '22:00'
+      name:
+        type: string
+        default: 'Test Booking'
+      dry_run:
+        description: 'TRUE = fill only, never submit (safe). FALSE = real booking.'
+        type: boolean
+        default: true
+      stop_minutes:
+        description: 'Give up after N minutes'
+        type: string
+        default: '8'
+
+permissions:
+  contents: read
+
+jobs:
+  test-book:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - run: npm install
+      - run: npx playwright install --with-deps chromium
+      - name: Probe ${{ inputs.date }} (dry_run=${{ inputs.dry_run }})
+        env:
+          BOOK_EMAIL: ${{ secrets.BOOK_EMAIL }}
+          BOOK_PHONE: ${{ secrets.BOOK_PHONE }}
+        run: |
+          STOP=$(node -e "console.log(new Date(Date.now()+${{ inputs.stop_minutes }}*60000).toISOString())")
+          node src/book.js \
+            --date "${{ inputs.date }}" \
+            --name "${{ inputs.name }}" \
+            --email "$BOOK_EMAIL" \
+            --phone "$BOOK_PHONE" \
+            --window-start "${{ inputs.window_start }}" \
+            --window-end "${{ inputs.window_end }}" \
+            --stop-at "$STOP" \
+            --retry-ms 20000 \
+            --dry-run "${{ inputs.dry_run }}"
