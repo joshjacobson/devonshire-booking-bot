@@ -44,8 +44,9 @@ jobs:
       - run: npx playwright install --with-deps chromium
       - name: Probe ${{ inputs.date }} (dry_run=${{ inputs.dry_run }})
         env:
-          BOOK_EMAIL: ${{ secrets.BOOK_EMAIL }}
-          BOOK_PHONE: ${{ secrets.BOOK_PHONE }}
+          # Reuse the night-12 identity for manual smoke tests (dry-run never submits).
+          BOOK_EMAIL: ${{ secrets.BOOK_EMAIL_12 }}
+          BOOK_PHONE: ${{ secrets.BOOK_PHONE_12 }}
         run: |
           STOP=$(node -e "console.log(new Date(Date.now()+${{ inputs.stop_minutes }}*60000).toISOString())")
           node src/book.js \

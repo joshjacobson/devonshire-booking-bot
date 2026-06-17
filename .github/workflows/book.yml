@@ -46,8 +46,9 @@ jobs:
       - run: npx playwright install --with-deps chromium
       - name: Book ${{ matrix.date }}
         env:
-          BOOK_EMAIL: ${{ secrets.BOOK_EMAIL }}
-          BOOK_PHONE: ${{ secrets.BOOK_PHONE }}
+          # Each night uses its own distinct email + phone (no shared identifiers).
+          BOOK_EMAIL: ${{ secrets[format('BOOK_EMAIL_{0}', matrix.night)] }}
+          BOOK_PHONE: ${{ secrets[format('BOOK_PHONE_{0}', matrix.night)] }}
           BOOK_NAME: ${{ secrets[format('BOOK_NAME_{0}', matrix.night)] }}
         run: |
           node src/book.js \
