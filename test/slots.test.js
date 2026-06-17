@@ -15,7 +15,7 @@ const {
   classifyBookingPage,
 } = require('../src/slots');
 
-const { buildBookUrl, parseArgs } = require('../src/book');
+const { buildBookUrl, parseArgs, createBudget, parseNights } = require('../src/book');
 
 test('timeToMinutes parses HH:MM', () => {
   assert.equal(timeToMinutes('19:15'), 1155);
@@ -119,6 +119,43 @@ test('buildBookUrl encodes the verified Devonshire/Dinner params', () => {
   assert.match(url, /date=2026-07-12/);
   assert.match(url, /time=19%3A00/);
   assert.match(url, /duration=120/);
+});
+
+test('createBudget caps total commits and never books more than max', () => {
+  const b = createBudget(2);
+  assert.equal(b.isFull(), false);
+  // two concurrent submits both acquire
+  assert.equal(b.tryAcquire(), true);
+  assert.equal(b.tryAcquire(), true);
+  assert.equal(b.tryAcquire(), false); // no tokens left while 2 in flight
+  // one fails and returns its token
+  b.release();
+  assert.equal(b.tryAcquire(), true); // freed slot reusable
+  // commit the two that succeed
+  b.commit();
+  assert.equal(b.isFull(), false);
+  b.commit();
+  assert.equal(b.isFull(), true); // 2 committed = cap reached
+  assert.equal(b.committed, 2);
+  assert.equal(b.tryAcquire(), false); // nothing more once full
+});
+
+test('createBudget(Infinity) never blocks (single-night mode)', () => {
+  const b = createBudget(Infinity);
+  for (let i = 0; i < 5; i++) assert.equal(b.tryAcquire(), true);
+  assert.equal(b.isFull(), false);
+});
+
+test('parseNights maps nights to env name/email/phone', () => {
+  const env = {
+    BOOK_NAME_12: 'A One', BOOK_EMAIL_12: 'a@x.com', BOOK_PHONE_12: '+11',
+    BOOK_NAME_13: 'B Two', BOOK_EMAIL_13: 'b@x.com', BOOK_PHONE_13: '+12',
+  };
+  const nights = parseNights('12:2026-07-12, 13:2026-07-13', env);
+  assert.equal(nights.length, 2);
+  assert.deepEqual(nights[0], { night: '12', date: '2026-07-12', name: 'A One', email: 'a@x.com', phone: '+11' });
+  assert.equal(nights[1].date, '2026-07-13');
+  assert.equal(nights[1].email, 'b@x.com');
 });
 
 test('parseArgs reads --flags with values and bare booleans', () => {
