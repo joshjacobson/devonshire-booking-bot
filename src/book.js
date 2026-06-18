@@ -83,16 +83,28 @@ async function readPageSignals(page) {
   });
 }
 
-/** Read a confirmation result from the page after submitting. */
+/**
+ * Read the post-submit page. `confirmed` requires POSITIVE proof of a booking
+ * (a DMN-<digits> reference, or an explicit "is now confirmed"). `failed` flags
+ * an explicit non-booking (slot sniped / enquiry / error). Neither => ambiguous.
+ */
 async function readConfirmation(page) {
   return page.evaluate(() => {
     const text = (document.body.innerText || '').replace(/\s+/g, ' ');
+    const refMatch = text.match(/(DMN-\d{6,})/i);
     const confirmed =
-      /booking is confirmed|your booking is confirmed|booking confirmed|thank you|we look forward to|see you|confirmation/i.test(
+      !!refMatch || /your booking[^.]*is now confirmed|your booking is confirmed|booking is confirmed/i.test(text);
+    const failed =
+      /unable to automatically confirm|booking enquiry|no longer available|no availability|not available|sold out|already been booked|fully booked|something went wrong|please try again|could not|couldn'?t|error/i.test(
         text
       );
-    const refMatch = text.match(/(DMN-\d{6,})/i) || text.match(/(?:reference|ref|booking)\D{0,12}([A-Z0-9]{5,})/i);
-    return { confirmed, reference: refMatch ? refMatch[1] : null, url: location.href, snippet: text.slice(0, 300) };
+    return {
+      confirmed,
+      failed: failed && !confirmed,
+      reference: refMatch ? refMatch[1] : null,
+      url: location.href,
+      snippet: text.slice(0, 300),
+    };
   });
 }
 
@@ -140,33 +152,35 @@ async function attemptBooking(context, { date, time, numPeople, name, email, pho
       return { status: 'dry-run-ready', time };
     }
 
-    // Global cap: only submit if we can claim one of the remaining slots.
+    // Global cap: claim a token before submitting. The token is COMMITTED only on
+    // positive proof of a booking; on any other outcome it is RELEASED, so a
+    // submit that didn't actually book never wastes a cap slot.
     if (budget && !budget.tryAcquire()) {
-      return { status: 'skipped-budget', time };
+      return { status: 'skipped-budget', time, submitted: false };
     }
-    let holding = !!budget; // hold a token until we commit it or give it back
+    let holding = !!budget; // hold the token until committed or released (finally)
+    let submitted = false;
 
     try {
       const submit = page.locator('button[type=submit]', { hasText: /^\s*Book Now\s*$/i }).first();
       await submit.click({ timeout: 15000 });
+      submitted = true;
       await page.waitForLoadState('domcontentloaded', { timeout: 30000 }).catch(() => {});
       await sleep(2500);
       const conf = await readConfirmation(page);
       if (conf.confirmed) {
         if (budget) {
           budget.commit();
-          holding = false;
+          holding = false; // token consumed by a real booking
         }
-        return { status: 'booked', reference: conf.reference, time, url: conf.url };
+        return { status: 'booked', reference: conf.reference, time, url: conf.url, submitted };
       }
-      // Submitted but text not detected — treat as likely booked; count it.
-      if (budget) {
-        budget.commit();
-        holding = false;
-      }
-      return { status: 'submitted-unconfirmed', time, conf };
+      // No proof of booking → token released in finally; do NOT count it.
+      // 'submit-failed' = explicit non-booking (safe to retry). 'submit-ambiguous'
+      // = couldn't tell (rare); caller will stop+flag to avoid a possible double.
+      return { status: conf.failed ? 'submit-failed' : 'submit-ambiguous', time, submitted, conf };
     } finally {
-      if (holding && budget) budget.release(); // submit threw before commit → free the slot
+      if (holding && budget) budget.release();
     }
   } catch (err) {
     return { status: 'error', time, error: String(err && err.message ? err.message : err) };
@@ -196,27 +210,40 @@ async function bookOneNight(context, cfg, opts, budget) {
     await sleep(waitMs);
   }
 
+  const maxSubmits = Number(opts.maxSubmitsPerNight || 5);
   let attempt = 0;
+  let submits = 0; // total Book-Now clicks for this night (backstop vs duplicates)
+  let ambiguous = 0; // submits we couldn't classify as booked or clean-miss
   while (Date.now() < stopAtMs) {
     if (budget && budget.isFull()) {
-      log(`🛑 [${date}] booking cap reached — stopping "${name}".`);
+      log(`🛑 [${date}] cap reached elsewhere — stopping "${name}".`);
       return { ok: false, stopped: true, date, name };
     }
     attempt += 1;
     for (const time of candidates) {
       if (budget && budget.isFull()) return { ok: false, stopped: true, date, name };
+      if (submits >= maxSubmits) {
+        log(`🛑 [${date}] hit submit cap (${maxSubmits}) without confirmation — stopping to avoid duplicates. VERIFY EMAIL.`);
+        return { ok: false, needsManualCheck: true, date, name };
+      }
       const res = await attemptBooking(context, { date, time, numPeople, name, email, phone, dryRun, budget });
+      if (res.submitted) submits += 1;
       log(`  [${date}] attempt#${attempt} ${time} -> ${res.status}${res.reference ? ' ref=' + res.reference : ''}`);
       if (res.status === 'booked') {
         log(`✅ BOOKED ${date} ${time} for "${name}" ref=${res.reference || '(none shown)'}`);
         return { ok: true, date, time, reference: res.reference || null, name };
       }
       if (res.status === 'dry-run-ready') return { ok: true, dryRun: true, date, time, name };
-      if (res.status === 'submitted-unconfirmed') {
-        log(`⚠️ [${date}] submitted but confirmation text not detected; verify email.`);
-        return { ok: true, unconfirmed: true, date, time, name };
+      if (res.status === 'submit-ambiguous') {
+        ambiguous += 1;
+        log(`⚠️ [${date}] submit AMBIGUOUS (#${ambiguous}); cap slot released. VERIFY EMAIL.`);
+        if (ambiguous >= 2) {
+          log(`🛑 [${date}] repeated ambiguous submits — stopping to avoid a possible duplicate.`);
+          return { ok: false, needsManualCheck: true, date, name };
+        }
       }
-      // 'skipped-budget' (token in flight elsewhere) / 'unavailable' / 'enquiry-only' → keep looping
+      // 'submit-failed' (clean miss — slot sniped) / 'unavailable' / 'enquiry-only' /
+      // 'skipped-budget' → token already released; keep probing.
     }
     if (Date.now() + retryMs >= stopAtMs) break;
     await sleep(retryMs);
@@ -279,9 +306,10 @@ async function runAll(opts) {
         }
       })
     );
-    log(`Done. Confirmed ${budget.committed}/${maxBookings}.`);
     const booked = results.filter((r) => r && r.ok && !r.dryRun).map((r) => ({ date: r.date, name: r.name, time: r.time }));
-    return { ok: budget.committed > 0, committed: budget.committed, maxBookings, booked, results };
+    const flagged = results.filter((r) => r && r.needsManualCheck).map((r) => ({ date: r.date, name: r.name }));
+    log(`Done. Confirmed ${budget.committed}/${maxBookings}.${flagged.length ? ' ⚠️ VERIFY EMAIL for: ' + flagged.map((f) => f.date).join(', ') : ''}`);
+    return { ok: budget.committed > 0, committed: budget.committed, maxBookings, booked, flagged, results };
   } finally {
     await browser.close().catch(() => {});
   }

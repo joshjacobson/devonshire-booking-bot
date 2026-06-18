@@ -140,6 +140,25 @@ test('createBudget caps total commits and never books more than max', () => {
   assert.equal(b.tryAcquire(), false); // nothing more once full
 });
 
+test('a failed submit releases its slot so the cap still reaches 2 (no premature cap)', () => {
+  const b = createBudget(2);
+  // Night A and Night B both find a slot and acquire tokens.
+  assert.equal(b.tryAcquire(), true); // A
+  assert.equal(b.tryAcquire(), true); // B
+  assert.equal(b.tryAcquire(), false); // C blocked while 2 in flight
+  // A's submit DID NOT actually book (slot sniped) -> release, NOT commit.
+  b.release();
+  // B's submit booked.
+  b.commit();
+  assert.equal(b.committed, 1);
+  assert.equal(b.isFull(), false); // critical: we are NOT prematurely full
+  // C can now grab the freed slot and book the 2nd.
+  assert.equal(b.tryAcquire(), true); // C
+  b.commit();
+  assert.equal(b.committed, 2);
+  assert.equal(b.isFull(), true);
+});
+
 test('createBudget(Infinity) never blocks (single-night mode)', () => {
   const b = createBudget(Infinity);
   for (let i = 0; i < 5; i++) assert.equal(b.tryAcquire(), true);
