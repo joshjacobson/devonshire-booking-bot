@@ -1,13 +1,16 @@
 name: Devonshire live booking
 
+# The Jun-2026 one-shot is DONE (Jul 12 + Jul 15 booked), so there is no active
+# cron — leaving "45 8 18 6 *" would re-fire every June 18. To arm for a future
+# release, uncomment `schedule` and set `release_at`/`run_for_min` defaults below.
+#
+# Timing model (fixes the Jun-18 miss): the job sleeps until `release_at`, then
+# probes for `run_for_min` minutes measured from the ACTUAL start — so a late
+# scheduler launch still gets a full window instead of finding an elapsed stop
+# time and giving up. `give-up-after-min` abandons only a wildly-late misfire.
 on:
-  # Fires 08:45 UTC on 18 June. The script then SLEEPS until 09:29 UTC
-  # (= 10:29 London, 1 min before the 10:30 table release) and probes every 30s.
-  # Early fire absorbs GitHub's scheduled-launch jitter.
-  schedule:
-    - cron: '45 8 18 6 *'
-  # Manual run. With no inputs it uses the LIVE config below (a safe backup arming).
-  # With dry_run + overrides it can smoke-test the real job without booking.
+  # schedule:
+  #   - cron: '45 8 18 6 *'   # example: 08:45 UTC; script then waits for release_at
   workflow_dispatch:
     inputs:
       dry_run:
@@ -15,22 +18,23 @@ on:
         type: boolean
         default: false
       nights:
-        description: 'Override nights "NN:YYYY-MM-DD,..." (blank = live Jul 12-15)'
+        description: 'Nights "NN:YYYY-MM-DD,..." (blank = Jul 12-15)'
         type: string
         default: ''
       window_start:
         type: string
-        default: ''
+        default: '19:00'
       window_end:
         type: string
-        default: ''
+        default: '20:00'
       release_at:
-        description: 'ISO start-probing time (blank = live 09:29Z Jun 18)'
+        description: 'ISO instant to START probing (blank = now)'
         type: string
         default: ''
-      stop_at:
+      run_for_min:
+        description: 'Probe for this many minutes after starting'
         type: string
-        default: ''
+        default: '90'
 
 permissions:
   contents: read
@@ -49,7 +53,7 @@ jobs:
   book:
     needs: unit-tests
     runs-on: ubuntu-latest
-    timeout-minutes: 120
+    timeout-minutes: 180
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -57,10 +61,8 @@ jobs:
           node-version: '20'
       - run: npm install
       - run: npx playwright install --with-deps chromium
-      - name: Book up to 2 of the 4 nights (Jul 12-15), 19:00-20:00, party of 2
+      - name: Book up to 2 of the nights, party of 2
         env:
-          # All four nights run in ONE process sharing a cap of 2 total bookings,
-          # so the moment 2 confirm, the other 2 stop. Each night = own identity.
           BOOK_NAME_12: ${{ secrets.BOOK_NAME_12 }}
           BOOK_EMAIL_12: ${{ secrets.BOOK_EMAIL_12 }}
           BOOK_PHONE_12: ${{ secrets.BOOK_PHONE_12 }}
@@ -79,7 +81,7 @@ jobs:
             --max-bookings 2 \
             --window-start "${{ inputs.window_start || '19:00' }}" \
             --window-end "${{ inputs.window_end || '20:00' }}" \
-            --release-at "${{ inputs.release_at || '2026-06-18T09:29:00Z' }}" \
-            --stop-at "${{ inputs.stop_at || '2026-06-18T10:30:00Z' }}" \
+            --release-at "${{ inputs.release_at }}" \
+            --run-for-min "${{ inputs.run_for_min || '90' }}" \
             --retry-ms 30000 \
             --dry-run "${{ inputs.dry_run || 'false' }}"

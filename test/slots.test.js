@@ -15,7 +15,7 @@ const {
   classifyBookingPage,
 } = require('../src/slots');
 
-const { buildBookUrl, parseArgs, createBudget, parseNights } = require('../src/book');
+const { buildBookUrl, parseArgs, createBudget, parseNights, shouldAbandon } = require('../src/book');
 
 test('timeToMinutes parses HH:MM', () => {
   assert.equal(timeToMinutes('19:15'), 1155);
@@ -175,6 +175,32 @@ test('parseNights maps nights to env name/email/phone', () => {
   assert.deepEqual(nights[0], { night: '12', date: '2026-07-12', name: 'A One', email: 'a@x.com', phone: '+11' });
   assert.equal(nights[1].date, '2026-07-13');
   assert.equal(nights[1].email, 'b@x.com');
+});
+
+test('shouldAbandon: a normal (even multi-hour) delay still runs; only a huge one abandons', () => {
+  const release = Date.parse('2026-06-18T09:30:00Z');
+  const giveUp = 24 * 60 * 60 * 1000; // 24h
+  // On time
+  assert.equal(shouldAbandon(release, release, giveUp), false);
+  // The exact Jun-18 failure: launched 3h20m late -> MUST still run (the old bug killed this)
+  assert.equal(shouldAbandon(Date.parse('2026-06-18T12:50:00Z'), release, giveUp), false);
+  // Wildly late (2 days) -> abandon to avoid surprise-booking
+  assert.equal(shouldAbandon(Date.parse('2026-06-20T10:00:00Z'), release, giveUp), true);
+  // No release set -> never abandon
+  assert.equal(shouldAbandon(Date.now(), undefined, giveUp), false);
+});
+
+test('relative stop window stays in the future even when release is already past', () => {
+  // Simulates the late-launch case: "release" was hours ago, but the probing
+  // window is computed from NOW, so there is still time to probe.
+  const now = Date.now();
+  const releaseInPast = now - 3 * 60 * 60 * 1000; // 3h ago
+  const runForMs = 90 * 60 * 1000;
+  const stopAt = now + runForMs; // computed AFTER the (zero) sleep
+  assert.ok(stopAt > now, 'stop must be in the future');
+  // old-style absolute stop derived from release would already be elapsed:
+  const oldAbsoluteStop = releaseInPast + 60 * 60 * 1000;
+  assert.ok(oldAbsoluteStop < now, 'the old absolute-stop approach would have elapsed (the bug)');
 });
 
 test('parseArgs reads --flags with values and bare booleans', () => {

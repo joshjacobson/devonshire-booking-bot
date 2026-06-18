@@ -48,7 +48,6 @@ jobs:
           BOOK_EMAIL: ${{ secrets.BOOK_EMAIL_12 }}
           BOOK_PHONE: ${{ secrets.BOOK_PHONE_12 }}
         run: |
-          STOP=$(node -e "console.log(new Date(Date.now()+${{ inputs.stop_minutes }}*60000).toISOString())")
           node src/book.js \
             --date "${{ inputs.date }}" \
             --name "${{ inputs.name }}" \
@@ -56,6 +55,6 @@ jobs:
             --phone "$BOOK_PHONE" \
             --window-start "${{ inputs.window_start }}" \
             --window-end "${{ inputs.window_end }}" \
-            --stop-at "$STOP" \
+            --run-for-min "${{ inputs.stop_minutes }}" \
             --retry-ms 20000 \
             --dry-run "${{ inputs.dry_run }}"

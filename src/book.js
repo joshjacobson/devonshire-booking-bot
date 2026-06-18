@@ -35,6 +35,19 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
  * tryAcquire() must be called (synchronously) immediately before a submit so
  * at most `max` submits are ever in flight or committed at once.
  */
+/**
+ * Should we abandon before even starting? True only when the job launched so
+ * long after the intended release that we'd risk a surprise booking. A normal
+ * (even multi-hour) GitHub scheduler delay stays well under the limit and runs.
+ */
+function shouldAbandon(nowMs, releaseAtMs, giveUpAfterMs) {
+  return (
+    Number.isFinite(releaseAtMs) &&
+    Number.isFinite(giveUpAfterMs) &&
+    nowMs > releaseAtMs + giveUpAfterMs
+  );
+}
+
 function createBudget(max) {
   let remaining = max; // tokens available to start a submit
   let committed = 0; // confirmed bookings
@@ -197,18 +210,32 @@ async function bookOneNight(context, cfg, opts, budget) {
     windowEnd = '20:00',
     numPeople = 2,
     releaseAtMs = Date.now(),
-    stopAtMs = Date.now() + 45 * 60 * 1000,
+    runForMs = 90 * 60 * 1000,
+    giveUpAfterMs = 24 * 60 * 60 * 1000,
     retryMs = 30000,
     dryRun = false,
   } = opts;
   const candidates = generateCandidateTimes(windowStart, windowEnd, 15);
   log(`Night ${date} ("${name}"): window ${windowStart}-${windowEnd} [${candidates.join(',')}] dryRun=${dryRun}`);
 
+  // Guard: if the job launched FAR past the intended release (e.g. a misfire days
+  // later), abandon rather than surprise-book. A normal delay stays under the limit.
+  if (shouldAbandon(Date.now(), releaseAtMs, giveUpAfterMs)) {
+    log(`⏭️ [${date}] launched ${Math.round((Date.now() - releaseAtMs) / 60000)}min after release (limit ${Math.round(giveUpAfterMs / 60000)}min) — abandoning.`);
+    return { ok: false, tooLate: true, date, name };
+  }
+
   const waitMs = Math.max(0, releaseAtMs - Date.now());
   if (waitMs > 0) {
     log(`[${date}] sleeping ${Math.round(waitMs / 1000)}s until ${new Date(releaseAtMs).toISOString()}`);
     await sleep(waitMs);
   }
+
+  // KEY FIX (Jun-18 bug): stop time is RELATIVE to when probing actually starts,
+  // computed AFTER the sleep — so a late launch still gets a full probing window
+  // instead of finding an already-elapsed absolute stop time and giving up.
+  const stopAtMs = Date.now() + runForMs;
+  log(`[${date}] probing every ${Math.round(retryMs / 1000)}s until ${new Date(stopAtMs).toISOString()} (${Math.round(runForMs / 60000)}min).`);
 
   const maxSubmits = Number(opts.maxSubmitsPerNight || 5);
   let attempt = 0;
@@ -335,7 +362,11 @@ function sharedTiming(a, env) {
     windowEnd: a['window-end'] || env.WINDOW_END || '20:00',
     numPeople: Number(a.people || env.NUM_PEOPLE || 2),
     releaseAtMs: a['release-at'] || env.RELEASE_AT ? Date.parse(a['release-at'] || env.RELEASE_AT) : Date.now(),
-    stopAtMs: a['stop-at'] || env.STOP_AT ? Date.parse(a['stop-at'] || env.STOP_AT) : Date.now() + 45 * 60 * 1000,
+    // Relative probing window (minutes) measured from actual probe start — NOT a
+    // fixed clock time. Robust to a late scheduler launch.
+    runForMs: Number(a['run-for-min'] || env.RUN_FOR_MIN || 90) * 60 * 1000,
+    // Abandon if launched more than this many minutes after release (default 24h).
+    giveUpAfterMs: Number(a['give-up-after-min'] || env.GIVE_UP_AFTER_MIN || 1440) * 60 * 1000,
     retryMs: Number(a['retry-ms'] || env.RETRY_MS || 30000),
     dryRun: (a['dry-run'] || env.DRY_RUN) === 'true',
     headless: (a.headless || env.HEADLESS || 'true') !== 'false',
@@ -402,6 +433,7 @@ module.exports = {
   VENUE,
   buildBookUrl,
   createBudget,
+  shouldAbandon,
   readPageSignals,
   readConfirmation,
   attemptBooking,
